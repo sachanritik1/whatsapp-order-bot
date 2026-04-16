@@ -1,0 +1,201 @@
+import { Effect, ManagedRuntime, Schema } from "effect";
+import express, {
+  type ErrorRequestHandler,
+  type Express,
+  type Request,
+  type Response
+} from "express";
+import { createServer, type Server } from "node:http";
+
+import { AppConfigService } from "../config.js";
+import { logInfo, logWarn } from "../logging.js";
+import {
+  InboundMessageSchema,
+  WhatsAppWebhookPayloadSchema,
+  type AppConfig,
+  type InboundMessage
+} from "../schema.js";
+import { InboundEventRepo } from "../repos/inbound-event-repo.js";
+
+const decodeWebhookPayload = Schema.decodeUnknownSync(WhatsAppWebhookPayloadSchema);
+const decodeInboundMessage = Schema.decodeUnknownSync(InboundMessageSchema);
+
+export interface RunningServer {
+  readonly app: Express;
+  readonly server: Server;
+  readonly port: number;
+  readonly close: () => Promise<void>;
+}
+
+const sendReceived = (response: Response) => {
+  response.status(200).json({ received: true });
+};
+
+const readQueryParam = (value: unknown): string | null => {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value) && typeof value[0] === "string") {
+    return value[0];
+  }
+
+  return null;
+};
+
+const extractInboundMessages = (
+  payload: ReturnType<typeof decodeWebhookPayload>
+): ReadonlyArray<InboundMessage> =>
+  payload.entry.flatMap((entry) =>
+    entry.changes.flatMap((change) =>
+      change.value.messages.map((message) =>
+        decodeInboundMessage({
+          phone: message.from,
+          text: message.text.body,
+          messageId: message.id,
+          receivedAt: new Date(Number(message.timestamp) * 1000).toISOString()
+        })
+      )
+    )
+  );
+
+const handleVerification = (
+  request: Request,
+  response: Response,
+  config: AppConfig
+) => {
+  const mode = readQueryParam(request.query["hub.mode"]);
+  const token = readQueryParam(request.query["hub.verify_token"]);
+  const challenge = readQueryParam(request.query["hub.challenge"]);
+
+  if (mode === "subscribe" && token === config.webhookVerifyToken && challenge) {
+    response.status(200).type("text/plain").send(challenge);
+    return;
+  }
+
+  response.status(403).type("text/plain").send("Forbidden");
+};
+
+const handleWebhookPost = async (
+  runtime: ManagedRuntime.ManagedRuntime<any, any>,
+  payload: unknown,
+  response: Response
+) => {
+  try {
+    const decodedPayload = decodeWebhookPayload(payload);
+    const messages = extractInboundMessages(decodedPayload);
+
+    if (messages.length > 0) {
+      logInfo("webhook.received", { messageCount: messages.length });
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const repo = yield* InboundEventRepo;
+          yield* repo.enqueue(messages);
+        })
+      );
+
+      for (const message of messages) {
+        logInfo("queue.enqueued", {
+          messageId: message.messageId,
+          phone: message.phone
+        });
+      }
+    } else {
+      logInfo("webhook.ignored_non_message", {
+        reason: "Payload did not include inbound text messages."
+      });
+    }
+
+    sendReceived(response);
+  } catch (cause) {
+    logWarn("webhook.ignored", {
+      reason: "Invalid or unsupported payload.",
+      cause: String(cause)
+    });
+    sendReceived(response);
+  }
+};
+
+export const buildExpressApp = (
+  runtime: ManagedRuntime.ManagedRuntime<any, any>,
+  config: AppConfig
+): Express => {
+  const app = express();
+  app.disable("x-powered-by");
+  app.use(express.json({ limit: "256kb" }));
+
+  app.get("/webhook", (request, response) => {
+    handleVerification(request, response, config);
+  });
+
+  app.post("/webhook", async (request, response) => {
+    await handleWebhookPost(runtime, request.body, response);
+  });
+
+  const invalidJsonHandler: ErrorRequestHandler = (error, _request, response, next) => {
+    if (
+      error instanceof SyntaxError ||
+      (typeof error === "object" &&
+        error !== null &&
+        "type" in error &&
+        error.type === "entity.parse.failed")
+    ) {
+      logWarn("webhook.invalid_json", {
+        reason: "Express JSON parser rejected request body."
+      });
+      sendReceived(response);
+      return;
+    }
+
+    next(error);
+  };
+
+  app.use(invalidJsonHandler);
+
+  app.use((_request, response) => {
+    response.status(404).json({ error: "Not found" });
+  });
+
+  return app;
+};
+
+export const startHttpServer = async (
+  runtime: ManagedRuntime.ManagedRuntime<any, any>,
+  portOverride?: number
+): Promise<RunningServer> => {
+  const config = await runtime.runPromise(
+    Effect.gen(function* () {
+      return yield* AppConfigService;
+    })
+  );
+  const port = portOverride ?? config.port;
+  const app = buildExpressApp(runtime, config);
+  const server = createServer(app);
+
+  await new Promise<void>((resolve) => {
+    server.listen(port, resolve);
+  });
+
+  const address = server.address();
+  const resolvedPort =
+    typeof address === "object" && address !== null ? address.port : port;
+
+  logInfo("server.started", { port: resolvedPort });
+
+  return {
+    app,
+    server,
+    port: resolvedPort,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        });
+      })
+  };
+};
