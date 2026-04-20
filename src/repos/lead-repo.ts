@@ -1,6 +1,8 @@
+import { eq } from "drizzle-orm";
 import { Context, Effect, Layer, Schema } from "effect";
 
 import { DatabaseError } from "../errors.js";
+import { leadsTable } from "./db-schema.js";
 import { DatabaseClient } from "./database.js";
 import { LeadSchema, type Lead } from "../schema.js";
 
@@ -31,50 +33,28 @@ export const LeadRepoLive = Layer.effect(
   Effect.gen(function* () {
     const db = yield* DatabaseClient;
 
-    const insertLead = db.prepare(`
-      INSERT INTO leads (source_message_id, phone, name, product, quantity, city_or_pincode, created_at)
-      VALUES (@sourceMessageId, @phone, @name, @product, @quantity, @cityOrPincode, @createdAt)
-      ON CONFLICT(source_message_id) DO NOTHING
-    `);
-    const findBySourceMessageId = db.prepare(`
-      SELECT
-        id,
-        source_message_id AS sourceMessageId,
-        phone,
-        name,
-        product,
-        quantity,
-        city_or_pincode AS cityOrPincode,
-        created_at AS createdAt
-      FROM leads
-      WHERE source_message_id = ?
-      LIMIT 1
-    `);
-    const listLeads = db.prepare(`
-      SELECT
-        id,
-        source_message_id AS sourceMessageId,
-        phone,
-        name,
-        product,
-        quantity,
-        city_or_pincode AS cityOrPincode,
-        created_at AS createdAt
-      FROM leads
-      ORDER BY id ASC
-    `);
-
     return LeadRepo.of({
       create: (input) =>
-        Effect.try({
-          try: () => {
+        Effect.tryPromise({
+          try: async () => {
             const createdAt = new Date().toISOString();
-            insertLead.run({
-              ...input,
-              createdAt
-            });
+            await db.drizzle
+              .insert(leadsTable)
+              .values({
+                sourceMessageId: input.sourceMessageId,
+                phone: input.phone,
+                name: input.name,
+                product: input.product,
+                quantity: input.quantity,
+                cityOrPincode: input.cityOrPincode,
+                createdAt
+              })
+              .onConflictDoNothing()
+              .run();
 
-            const row = findBySourceMessageId.get(input.sourceMessageId);
+            const row = await db.drizzle.query.leads.findFirst({
+              where: eq(leadsTable.sourceMessageId, input.sourceMessageId)
+            });
             if (!row) {
               throw new Error("Lead insert did not return a stored row.");
             }
@@ -88,9 +68,11 @@ export const LeadRepoLive = Layer.effect(
             })
         }),
       findBySourceMessageId: (sourceMessageId) =>
-        Effect.try({
-          try: () => {
-            const row = findBySourceMessageId.get(sourceMessageId);
+        Effect.tryPromise({
+          try: async () => {
+            const row = await db.drizzle.query.leads.findFirst({
+              where: eq(leadsTable.sourceMessageId, sourceMessageId)
+            });
             return row ? decodeLead(row) : null;
           },
           catch: (cause) =>
@@ -99,8 +81,13 @@ export const LeadRepoLive = Layer.effect(
               cause
             })
         }),
-      list: Effect.try({
-        try: () => decodeLeads(listLeads.all()),
+      list: Effect.tryPromise({
+        try: async () => {
+          const rows = await db.drizzle.query.leads.findMany({
+            orderBy: (leads, { asc }) => [asc(leads.id)]
+          });
+          return decodeLeads(rows);
+        },
         catch: (cause) =>
           new DatabaseError({
             message: "Unable to list leads.",

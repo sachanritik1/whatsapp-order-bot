@@ -1,6 +1,8 @@
+import { eq } from "drizzle-orm";
 import { Context, Effect, Layer, Schema } from "effect";
 
 import { DatabaseError } from "../errors.js";
+import { orderSessionsTable } from "./db-schema.js";
 import { DatabaseClient } from "./database.js";
 import { OrderSessionSchema, type OrderSession } from "../schema.js";
 
@@ -50,56 +52,29 @@ export const OrderSessionRepoLive = Layer.effect(
   Effect.gen(function* () {
     const db = yield* DatabaseClient;
 
-    const getByPhoneStatement = db.prepare(`
-      SELECT
-        phone,
-        name,
-        product,
-        quantity,
-        city_or_pincode AS cityOrPincode,
-        selected_product_id AS selectedProductId,
-        candidate_product_ids AS candidateProductIds,
-        missing_fields AS missingFields,
-        last_asked_follow_up AS lastAskedFollowUp,
-        clarification_count AS clarificationCount,
-        status,
-        updated_at AS updatedAt
-      FROM order_sessions
-      WHERE phone = ?
-    `);
-
-    const saveStatement = db.prepare(`
-      INSERT INTO order_sessions (
-        phone, name, product, quantity, city_or_pincode, selected_product_id,
-        candidate_product_ids, missing_fields, last_asked_follow_up, clarification_count,
-        status, updated_at
-      )
-      VALUES (
-        @phone, @name, @product, @quantity, @cityOrPincode, @selectedProductId,
-        @candidateProductIds, @missingFields, @lastAskedFollowUp, @clarificationCount,
-        @status, @updatedAt
-      )
-      ON CONFLICT(phone) DO UPDATE SET
-        name = excluded.name,
-        product = excluded.product,
-        quantity = excluded.quantity,
-        city_or_pincode = excluded.city_or_pincode,
-        selected_product_id = excluded.selected_product_id,
-        candidate_product_ids = excluded.candidate_product_ids,
-        missing_fields = excluded.missing_fields,
-        last_asked_follow_up = excluded.last_asked_follow_up,
-        clarification_count = excluded.clarification_count,
-        status = excluded.status,
-        updated_at = excluded.updated_at
-    `);
-
-    const clearStatement = db.prepare("DELETE FROM order_sessions WHERE phone = ?");
-
     return OrderSessionRepo.of({
       getByPhone: (phone) =>
         Effect.try({
           try: () => {
-            const row = getByPhoneStatement.get(phone) as
+            const row = db.drizzle
+              .select({
+                phone: orderSessionsTable.phone,
+                name: orderSessionsTable.name,
+                product: orderSessionsTable.product,
+                quantity: orderSessionsTable.quantity,
+                cityOrPincode: orderSessionsTable.cityOrPincode,
+                selectedProductId: orderSessionsTable.selectedProductId,
+                candidateProductIds: orderSessionsTable.candidateProductIds,
+                missingFields: orderSessionsTable.missingFields,
+                lastAskedFollowUp: orderSessionsTable.lastAskedFollowUp,
+                clarificationCount: orderSessionsTable.clarificationCount,
+                status: orderSessionsTable.status,
+                updatedAt: orderSessionsTable.updatedAt
+              })
+              .from(orderSessionsTable)
+              .where(eq(orderSessionsTable.phone, phone))
+              .limit(1)
+              .get() as
               | {
                   readonly phone: string;
                   readonly name: string | null;
@@ -135,12 +110,39 @@ export const OrderSessionRepoLive = Layer.effect(
         Effect.try({
           try: () => {
             const updatedAt = new Date().toISOString();
-            saveStatement.run({
-              ...input,
-              candidateProductIds: JSON.stringify(input.candidateProductIds),
-              missingFields: JSON.stringify(input.missingFields),
-              updatedAt
-            });
+            db.drizzle
+              .insert(orderSessionsTable)
+              .values({
+                phone: input.phone,
+                name: input.name,
+                product: input.product,
+                quantity: input.quantity,
+                cityOrPincode: input.cityOrPincode,
+                selectedProductId: input.selectedProductId,
+                candidateProductIds: JSON.stringify(input.candidateProductIds),
+                missingFields: JSON.stringify(input.missingFields),
+                lastAskedFollowUp: input.lastAskedFollowUp,
+                clarificationCount: input.clarificationCount,
+                status: input.status,
+                updatedAt
+              })
+              .onConflictDoUpdate({
+                target: orderSessionsTable.phone,
+                set: {
+                  name: input.name,
+                  product: input.product,
+                  quantity: input.quantity,
+                  cityOrPincode: input.cityOrPincode,
+                  selectedProductId: input.selectedProductId,
+                  candidateProductIds: JSON.stringify(input.candidateProductIds),
+                  missingFields: JSON.stringify(input.missingFields),
+                  lastAskedFollowUp: input.lastAskedFollowUp,
+                  clarificationCount: input.clarificationCount,
+                  status: input.status,
+                  updatedAt
+                }
+              })
+              .run();
 
             return decodeOrderSession({
               ...input,
@@ -156,7 +158,7 @@ export const OrderSessionRepoLive = Layer.effect(
       clear: (phone) =>
         Effect.try({
           try: () => {
-            clearStatement.run(phone);
+            db.drizzle.delete(orderSessionsTable).where(eq(orderSessionsTable.phone, phone)).run();
           },
           catch: (cause) =>
             new DatabaseError({

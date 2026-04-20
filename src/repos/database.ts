@@ -1,96 +1,91 @@
 import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { Context, Effect, Layer } from "effect";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { AppConfigService } from "../config.js";
 import { DatabaseError } from "../errors.js";
+import { drizzleSchema } from "./db-schema.js";
 
 export type SqliteDatabase = InstanceType<typeof Database>;
+export type DrizzleDatabase = ReturnType<typeof drizzle<typeof drizzleSchema>>;
+export interface DatabaseService {
+  readonly sqlite: SqliteDatabase;
+  readonly drizzle: DrizzleDatabase;
+}
 
-const initializeDatabase = (db: SqliteDatabase) => {
-  db.pragma("journal_mode = WAL");
+const migrationsFolder = fileURLToPath(new URL("../../drizzle", import.meta.url));
+const journalPath = fileURLToPath(new URL("../../drizzle/meta/_journal.json", import.meta.url));
+
+const maybeBaselineExistingDatabase = async (db: SqliteDatabase) => {
   db.exec(`
-    CREATE TABLE IF NOT EXISTS inbound_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      phone TEXT NOT NULL,
-      text TEXT NOT NULL,
-      message_id TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL,
-      attempts INTEGER NOT NULL DEFAULT 0,
-      error_message TEXT,
-      received_at TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS order_sessions (
-      phone TEXT PRIMARY KEY,
-      name TEXT,
-      product TEXT,
-      quantity INTEGER,
-      city_or_pincode TEXT,
-      selected_product_id TEXT,
-      candidate_product_ids TEXT NOT NULL DEFAULT '[]',
-      missing_fields TEXT NOT NULL DEFAULT '[]',
-      last_asked_follow_up TEXT,
-      clarification_count INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS leads (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source_message_id TEXT NOT NULL UNIQUE,
-      phone TEXT NOT NULL,
-      name TEXT NOT NULL,
-      product TEXT NOT NULL,
-      quantity INTEGER NOT NULL,
-      city_or_pincode TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
+    CREATE TABLE IF NOT EXISTS __drizzle_migrations (
+      id SERIAL PRIMARY KEY,
+      hash text NOT NULL,
+      created_at numeric
+    )
   `);
 
-  const existingColumns = db
-    .prepare("PRAGMA table_info(order_sessions)")
-    .all() as ReadonlyArray<{ readonly name: string }>;
-  const columnNames = new Set(existingColumns.map((column) => column.name));
+  const migrationCount = db
+    .prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations")
+    .get() as { readonly count: number };
 
-  const maybeAddColumn = (name: string, sql: string) => {
-    if (!columnNames.has(name)) {
-      db.exec(`ALTER TABLE order_sessions ADD COLUMN ${sql}`);
-    }
-  };
-
-  maybeAddColumn("selected_product_id", "selected_product_id TEXT");
-  maybeAddColumn(
-    "candidate_product_ids",
-    "candidate_product_ids TEXT NOT NULL DEFAULT '[]'"
-  );
-  maybeAddColumn("missing_fields", "missing_fields TEXT NOT NULL DEFAULT '[]'");
-  maybeAddColumn("last_asked_follow_up", "last_asked_follow_up TEXT");
-  maybeAddColumn(
-    "clarification_count",
-    "clarification_count INTEGER NOT NULL DEFAULT 0"
-  );
-
-  const leadColumns = db
-    .prepare("PRAGMA table_info(leads)")
-    .all() as ReadonlyArray<{ readonly name: string }>;
-  const leadColumnNames = new Set(leadColumns.map((column) => column.name));
-
-  if (!leadColumnNames.has("source_message_id")) {
-    db.exec("ALTER TABLE leads ADD COLUMN source_message_id TEXT");
-    db.exec(`
-      UPDATE leads
-      SET source_message_id = 'legacy-' || id
-      WHERE source_message_id IS NULL
-    `);
-    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS leads_source_message_id_idx ON leads(source_message_id)");
+  if (migrationCount.count > 0) {
+    return;
   }
+
+  const existingTables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+    .all() as ReadonlyArray<{ readonly name: string }>;
+  const tableNames = new Set(existingTables.map((row) => row.name));
+  const hasExistingAppSchema =
+    tableNames.has("inbound_events") &&
+    tableNames.has("order_sessions") &&
+    tableNames.has("leads");
+
+  if (!hasExistingAppSchema) {
+    return;
+  }
+
+  const journal = JSON.parse(await readFile(journalPath, "utf8")) as {
+    readonly entries: ReadonlyArray<{
+      readonly tag: string;
+      readonly when: number;
+    }>;
+  };
+  const firstMigration = journal.entries[0];
+
+  if (!firstMigration) {
+    return;
+  }
+
+  const migrationFilePath = fileURLToPath(
+    new URL(`../../drizzle/${firstMigration.tag}.sql`, import.meta.url)
+  );
+  const migrationSql = await readFile(migrationFilePath, "utf8");
+  const hash = createHash("sha256").update(migrationSql).digest("hex");
+
+  db.prepare(
+    `INSERT INTO __drizzle_migrations ("hash", "created_at") VALUES (?, ?)`
+  ).run(hash, firstMigration.when);
 };
 
-export const DatabaseClient = Context.GenericTag<SqliteDatabase>("DatabaseClient");
+const formatMigrationErrorMessage = (cause: unknown) => {
+  const message = cause instanceof Error ? cause.message : String(cause);
+
+  if (message.includes("already exists")) {
+    return "Unable to apply SQLite migrations. The local SQLite file is out of sync with the Drizzle migration journal. If auto-baselining did not resolve it, run `npm run db:flush` once.";
+  }
+
+  return "Unable to apply SQLite migrations.";
+};
+
+export const DatabaseClient = Context.GenericTag<DatabaseService>("DatabaseClient");
 
 export const DatabaseClientLive = Layer.scoped(
   DatabaseClient,
@@ -116,20 +111,34 @@ export const DatabaseClientLive = Layer.scoped(
           })
       });
 
-      yield* Effect.try({
-        try: () => initializeDatabase(db),
+      const drizzleDb = drizzle(db, { schema: drizzleSchema });
+
+      yield* Effect.tryPromise({
+        try: () => maybeBaselineExistingDatabase(db),
         catch: (cause) =>
           new DatabaseError({
-            message: "Unable to initialize SQLite schema.",
+            message: "Unable to baseline existing SQLite database for Drizzle migrations.",
             cause
           })
       });
 
-      return db;
+      yield* Effect.try({
+        try: () => migrate(drizzleDb, { migrationsFolder }),
+        catch: (cause) =>
+          new DatabaseError({
+            message: formatMigrationErrorMessage(cause),
+            cause
+          })
+      });
+
+      return {
+        sqlite: db,
+        drizzle: drizzleDb
+      };
     }),
-    (db) =>
+    (database) =>
       Effect.sync(() => {
-        db.close();
+        database.sqlite.close();
       })
   )
 );

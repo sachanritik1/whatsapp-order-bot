@@ -1,3 +1,4 @@
+import { and, asc, eq } from "drizzle-orm";
 import { Context, Effect, Layer, Schema } from "effect";
 
 import { DatabaseError } from "../errors.js";
@@ -7,6 +8,7 @@ import {
   type InboundEvent,
   type InboundMessage
 } from "../schema.js";
+import { inboundEventsTable } from "./db-schema.js";
 import { DatabaseClient } from "./database.js";
 
 export interface InboundEventRepoShape {
@@ -37,116 +39,93 @@ export const InboundEventRepoLive = Layer.effect(
   Effect.gen(function* () {
     const db = yield* DatabaseClient;
 
-    const insertStatement = db.prepare(`
-      INSERT INTO inbound_events (phone, text, message_id, status, attempts, error_message, received_at, created_at, updated_at)
-      VALUES (@phone, @text, @messageId, 'pending', 0, NULL, @receivedAt, @createdAt, @updatedAt)
-      ON CONFLICT(message_id) DO NOTHING
-    `);
+    const claimNext = () =>
+      db.drizzle.transaction((tx) => {
+        const row = tx
+          .select({
+            id: inboundEventsTable.id,
+            phone: inboundEventsTable.phone,
+            text: inboundEventsTable.text,
+            messageId: inboundEventsTable.messageId,
+            status: inboundEventsTable.status,
+            attempts: inboundEventsTable.attempts,
+            errorMessage: inboundEventsTable.errorMessage,
+            receivedAt: inboundEventsTable.receivedAt,
+            updatedAt: inboundEventsTable.updatedAt
+          })
+          .from(inboundEventsTable)
+          .where(eq(inboundEventsTable.status, "pending"))
+          .orderBy(asc(inboundEventsTable.id))
+          .limit(1)
+          .get() as
+          | {
+              readonly id: number;
+              readonly phone: string;
+              readonly text: string;
+              readonly messageId: string;
+              readonly status: "pending";
+              readonly attempts: number;
+              readonly errorMessage: string | null;
+              readonly receivedAt: string;
+              readonly updatedAt: string;
+            }
+          | undefined;
 
-    const claimSelect = db.prepare(`
-      SELECT
-        id,
-        phone,
-        text,
-        message_id AS messageId,
-        status,
-        attempts,
-        error_message AS errorMessage,
-        received_at AS receivedAt,
-        updated_at AS updatedAt
-      FROM inbound_events
-      WHERE status = 'pending'
-      ORDER BY id ASC
-      LIMIT 1
-    `);
+        if (!row) {
+          return null;
+        }
 
-    const claimUpdate = db.prepare(`
-      UPDATE inbound_events
-      SET status = 'processing', attempts = attempts + 1, updated_at = @updatedAt, error_message = NULL
-      WHERE id = @id AND status = 'pending'
-    `);
+        const now = new Date().toISOString();
+        const update = tx
+          .update(inboundEventsTable)
+          .set({
+            status: "processing",
+            attempts: row.attempts + 1,
+            errorMessage: null,
+            updatedAt: now
+          })
+          .where(and(eq(inboundEventsTable.id, row.id), eq(inboundEventsTable.status, "pending")))
+          .run();
+        if (update.changes === 0) {
+          return null;
+        }
 
-    const processedStatement = db.prepare(`
-      UPDATE inbound_events
-      SET status = 'processed', updated_at = @updatedAt
-      WHERE id = @id
-    `);
-
-    const failureStatement = db.prepare(`
-      UPDATE inbound_events
-      SET status = @status, updated_at = @updatedAt, error_message = @errorMessage
-      WHERE id = @id
-    `);
-
-    const listStatement = db.prepare(`
-      SELECT
-        id,
-        phone,
-        text,
-        message_id AS messageId,
-        status,
-        attempts,
-        error_message AS errorMessage,
-        received_at AS receivedAt,
-        updated_at AS updatedAt
-      FROM inbound_events
-      ORDER BY id ASC
-    `);
-
-    const claimNext = db.transaction(() => {
-      const row = claimSelect.get() as
-        | {
-            readonly id: number;
-            readonly phone: string;
-            readonly text: string;
-            readonly messageId: string;
-            readonly status: "pending";
-            readonly attempts: number;
-            readonly errorMessage: string | null;
-            readonly receivedAt: string;
-            readonly updatedAt: string;
-          }
-        | undefined;
-
-      if (!row) {
-        return null;
-      }
-
-      const now = new Date().toISOString();
-      const update = claimUpdate.run({
-        id: row.id,
-        updatedAt: now
+        return decodeInboundEvent({
+          ...row,
+          status: "processing",
+          attempts: row.attempts + 1,
+          errorMessage: null,
+          updatedAt: now
+        });
       });
-      if (update.changes === 0) {
-        return null;
-      }
-
-      return decodeInboundEvent({
-        ...row,
-        status: "processing",
-        attempts: Number(row.attempts) + 1,
-        errorMessage: null,
-        updatedAt: now
-      });
-    });
 
     return InboundEventRepo.of({
       enqueue: (messages) =>
         Effect.try({
           try: () => {
             const now = new Date().toISOString();
-            const transaction = db.transaction((items: ReadonlyArray<InboundMessage>) => {
-              for (const message of items) {
+            db.drizzle.transaction((tx) => {
+              for (const message of messages) {
                 const decoded = decodeInboundMessage(message);
-                insertStatement.run({
-                  ...decoded,
-                  createdAt: now,
-                  updatedAt: now
-                });
+                tx
+                  .insert(inboundEventsTable)
+                  .values({
+                    phone: decoded.phone,
+                    text: decoded.text,
+                    messageId: decoded.messageId,
+                    status: "pending",
+                    attempts: 0,
+                    errorMessage: null,
+                    receivedAt: decoded.receivedAt,
+                    createdAt: now,
+                    updatedAt: now
+                  })
+                  .onConflictDoNothing({
+                    target: inboundEventsTable.messageId
+                  })
+                  .run();
               }
             });
-
-            transaction(messages);
           },
           catch: (cause) =>
             new DatabaseError({
@@ -165,10 +144,14 @@ export const InboundEventRepoLive = Layer.effect(
       markProcessed: (id) =>
         Effect.try({
           try: () => {
-            processedStatement.run({
-              id,
-              updatedAt: new Date().toISOString()
-            });
+            db.drizzle
+              .update(inboundEventsTable)
+              .set({
+                status: "processed",
+                updatedAt: new Date().toISOString()
+              })
+              .where(eq(inboundEventsTable.id, id))
+              .run();
           },
           catch: (cause) =>
             new DatabaseError({
@@ -179,12 +162,15 @@ export const InboundEventRepoLive = Layer.effect(
         markFailed: (id, errorMessage) =>
           Effect.try({
             try: () => {
-              failureStatement.run({
-                id,
-                status: "failed",
-                errorMessage,
-                updatedAt: new Date().toISOString()
-              });
+              db.drizzle
+                .update(inboundEventsTable)
+                .set({
+                  status: "failed",
+                  errorMessage,
+                  updatedAt: new Date().toISOString()
+                })
+                .where(eq(inboundEventsTable.id, id))
+                .run();
 
               return "failed" as const;
             },
@@ -197,17 +183,25 @@ export const InboundEventRepoLive = Layer.effect(
       markRetryableFailure: (id, errorMessage) =>
         Effect.try({
           try: () => {
-            const row = db
-              .prepare("SELECT attempts FROM inbound_events WHERE id = ?")
-              .get(id) as { attempts: number } | undefined;
+            const row = db.drizzle
+              .select({
+                attempts: inboundEventsTable.attempts
+              })
+              .from(inboundEventsTable)
+              .where(eq(inboundEventsTable.id, id))
+              .limit(1)
+              .get();
             const status = row && row.attempts < 3 ? "pending" : "failed";
 
-            failureStatement.run({
-              id,
-              status,
-              errorMessage,
-              updatedAt: new Date().toISOString()
-            });
+            db.drizzle
+              .update(inboundEventsTable)
+              .set({
+                status,
+                errorMessage,
+                updatedAt: new Date().toISOString()
+              })
+              .where(eq(inboundEventsTable.id, id))
+              .run();
 
             return status;
           },
@@ -218,7 +212,24 @@ export const InboundEventRepoLive = Layer.effect(
             })
         }),
       list: Effect.try({
-        try: () => decodeInboundEvents(listStatement.all()),
+        try: () =>
+          decodeInboundEvents(
+            db.drizzle
+              .select({
+                id: inboundEventsTable.id,
+                phone: inboundEventsTable.phone,
+                text: inboundEventsTable.text,
+                messageId: inboundEventsTable.messageId,
+                status: inboundEventsTable.status,
+                attempts: inboundEventsTable.attempts,
+                errorMessage: inboundEventsTable.errorMessage,
+                receivedAt: inboundEventsTable.receivedAt,
+                updatedAt: inboundEventsTable.updatedAt
+              })
+              .from(inboundEventsTable)
+              .orderBy(asc(inboundEventsTable.id))
+              .all()
+          ),
         catch: (cause) =>
           new DatabaseError({
             message: "Unable to list inbound events.",

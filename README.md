@@ -20,6 +20,8 @@ npm install
 npm run dev
 ```
 
+If you already have a local SQLite file from the pre-Drizzle version of this repo, run `npm run db:flush` once before starting so the migration-managed schema can be created cleanly.
+
 Required environment variables:
 
 - `WEBHOOK_VERIFY_TOKEN`
