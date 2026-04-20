@@ -167,6 +167,27 @@ describe("LLMService Gemini provider", () => {
     expect(plan.replyText.length).toBeGreaterThan(0);
   });
 
+  it("falls back to heuristics when Gemini request times out", async () => {
+    const timeoutError = new Error("timed out");
+    timeoutError.name = "AbortError";
+
+    fetchSpy.mockRejectedValueOnce(timeoutError);
+
+    const plan = await runtime.runPromise(
+      Effect.gen(function* () {
+        const llm = yield* LLMService;
+        return yield* llm.planTurn({
+          userMessage: "Hi",
+          session: null
+        });
+      })
+    );
+
+    expect(plan.provider).toBe("heuristic");
+    expect(plan.intent).toBe("greeting");
+    expect(plan.action).toBe("greet_user");
+  });
+
   it("coerces empty extractedFields from Gemini into full schema", async () => {
     fetchSpy.mockResolvedValueOnce(
       new Response(

@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Schema } from "effect";
 
+import { DatabaseError, OrderSessionIncompleteError } from "../errors.js";
 import { overlapScore, tokenize } from "../lib/text.js";
 import { CatalogRepo } from "../repos/catalog-repo.js";
 import { FaqRepo } from "../repos/faq-repo.js";
@@ -37,8 +38,8 @@ export interface CommerceToolsShape {
   ) => Effect.Effect<ProductSearchResult>;
   readonly getProductDetails: (productIdOrName: string) => Effect.Effect<ProductSearchHit | null>;
   readonly searchFaq: (query: string) => Effect.Effect<FaqSearchResult>;
-  readonly getSession: (phone: string) => Effect.Effect<OrderSession | null, unknown>;
-  readonly updateSession: (input: UpdateSessionInput) => Effect.Effect<OrderSession, unknown>;
+  readonly getSession: (phone: string) => Effect.Effect<OrderSession | null, DatabaseError>;
+  readonly updateSession: (input: UpdateSessionInput) => Effect.Effect<OrderSession, DatabaseError>;
   readonly createLeadFromSession: (input: {
     readonly phone: string;
     readonly sourceMessageId: string;
@@ -49,8 +50,10 @@ export interface CommerceToolsShape {
     readonly product: string;
     readonly quantity: number;
     readonly cityOrPincode: string;
-  }, unknown>;
+  }, CommerceToolsError>;
 }
+
+export type CommerceToolsError = DatabaseError | OrderSessionIncompleteError;
 
 export class CommerceTools extends Context.Tag("CommerceTools")<
   CommerceTools,
@@ -246,7 +249,10 @@ export const CommerceToolsLive = Layer.effect(
             !session.cityOrPincode
           ) {
             return yield* Effect.fail(
-              new Error("Cannot create lead from incomplete order session.")
+              new OrderSessionIncompleteError({
+                phone,
+                message: "Cannot create lead from incomplete order session."
+              })
             );
           }
 

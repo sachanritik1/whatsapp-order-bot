@@ -20,3 +20,8 @@ export class IntegrationError extends Data.TaggedError("IntegrationError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
+
+export class OrderSessionIncompleteError extends Data.TaggedError("OrderSessionIncompleteError")<{
+  readonly phone: string;
+  readonly message: string;
+}> {}

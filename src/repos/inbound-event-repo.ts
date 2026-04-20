@@ -15,6 +15,7 @@ export interface InboundEventRepoShape {
   ) => Effect.Effect<void, DatabaseError>;
   readonly claimNext: Effect.Effect<InboundEvent | null, DatabaseError>;
   readonly markProcessed: (id: number) => Effect.Effect<void, DatabaseError>;
+  readonly markFailed: (id: number, errorMessage: string) => Effect.Effect<"failed", DatabaseError>;
   readonly markRetryableFailure: (
     id: number,
     errorMessage: string
@@ -62,7 +63,7 @@ export const InboundEventRepoLive = Layer.effect(
     const claimUpdate = db.prepare(`
       UPDATE inbound_events
       SET status = 'processing', attempts = attempts + 1, updated_at = @updatedAt, error_message = NULL
-      WHERE id = @id
+      WHERE id = @id AND status = 'pending'
     `);
 
     const processedStatement = db.prepare(`
@@ -92,7 +93,7 @@ export const InboundEventRepoLive = Layer.effect(
       ORDER BY id ASC
     `);
 
-    const claimNext = () => {
+    const claimNext = db.transaction(() => {
       const row = claimSelect.get() as
         | {
             readonly id: number;
@@ -112,10 +113,13 @@ export const InboundEventRepoLive = Layer.effect(
       }
 
       const now = new Date().toISOString();
-      claimUpdate.run({
+      const update = claimUpdate.run({
         id: row.id,
         updatedAt: now
       });
+      if (update.changes === 0) {
+        return null;
+      }
 
       return decodeInboundEvent({
         ...row,
@@ -124,7 +128,7 @@ export const InboundEventRepoLive = Layer.effect(
         errorMessage: null,
         updatedAt: now
       });
-    };
+    });
 
     return InboundEventRepo.of({
       enqueue: (messages) =>
@@ -172,6 +176,24 @@ export const InboundEventRepoLive = Layer.effect(
               cause
             })
         }),
+        markFailed: (id, errorMessage) =>
+          Effect.try({
+            try: () => {
+              failureStatement.run({
+                id,
+                status: "failed",
+                errorMessage,
+                updatedAt: new Date().toISOString()
+              });
+
+              return "failed" as const;
+            },
+            catch: (cause) =>
+              new DatabaseError({
+                message: "Unable to mark inbound event as failed.",
+                cause
+              })
+          }),
       markRetryableFailure: (id, errorMessage) =>
         Effect.try({
           try: () => {

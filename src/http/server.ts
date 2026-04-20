@@ -1,4 +1,4 @@
-import { Effect, ManagedRuntime, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import express, {
   type ErrorRequestHandler,
   type Express,
@@ -8,7 +8,8 @@ import express, {
 import { createServer, type Server } from "node:http";
 
 import { AppConfigService } from "../config.js";
-import { logInfo, logWarn } from "../logging.js";
+import { logError, logInfo, logWarn } from "../logging.js";
+import type { AppRuntime } from "../app-layer.js";
 import {
   InboundMessageSchema,
   WhatsAppWebhookPayloadSchema,
@@ -29,6 +30,10 @@ export interface RunningServer {
 
 const sendReceived = (response: Response) => {
   response.status(200).json({ received: true });
+};
+
+const sendRetryableFailure = (response: Response) => {
+  response.status(503).json({ received: false });
 };
 
 const readQueryParam = (value: unknown): string | null => {
@@ -77,47 +82,62 @@ const handleVerification = (
 };
 
 const handleWebhookPost = async (
-  runtime: ManagedRuntime.ManagedRuntime<any, any>,
+  runtime: AppRuntime,
   payload: unknown,
   response: Response
 ) => {
+  let decodedPayload: ReturnType<typeof decodeWebhookPayload>;
+
   try {
-    const decodedPayload = decodeWebhookPayload(payload);
-    const messages = extractInboundMessages(decodedPayload);
-
-    if (messages.length > 0) {
-      logInfo("webhook.received", { messageCount: messages.length });
-      await runtime.runPromise(
-        Effect.gen(function* () {
-          const repo = yield* InboundEventRepo;
-          yield* repo.enqueue(messages);
-        })
-      );
-
-      for (const message of messages) {
-        logInfo("queue.enqueued", {
-          messageId: message.messageId,
-          phone: message.phone
-        });
-      }
-    } else {
-      logInfo("webhook.ignored_non_message", {
-        reason: "Payload did not include inbound text messages."
-      });
-    }
-
-    sendReceived(response);
+    decodedPayload = decodeWebhookPayload(payload);
   } catch (cause) {
     logWarn("webhook.ignored", {
       reason: "Invalid or unsupported payload.",
       cause: String(cause)
     });
     sendReceived(response);
+    return;
+  }
+
+  const messages = extractInboundMessages(decodedPayload);
+  if (messages.length === 0) {
+    logInfo("webhook.ignored_non_message", {
+      reason: "Payload did not include inbound text messages."
+    });
+    sendReceived(response);
+    return;
+  }
+
+  logInfo("webhook.received", { messageCount: messages.length });
+
+  try {
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* InboundEventRepo;
+        yield* repo.enqueue(messages);
+      })
+    );
+
+    for (const message of messages) {
+      logInfo("queue.enqueued", {
+        messageId: message.messageId,
+        phone: message.phone
+      });
+    }
+
+    sendReceived(response);
+  } catch (cause) {
+    logError("webhook.enqueue.failed", {
+      reason: "Inbound event enqueue failed. Returning 503 so webhook provider can retry.",
+      messageCount: messages.length,
+      cause: String(cause)
+    });
+    sendRetryableFailure(response);
   }
 };
 
 export const buildExpressApp = (
-  runtime: ManagedRuntime.ManagedRuntime<any, any>,
+  runtime: AppRuntime,
   config: AppConfig
 ): Express => {
   const app = express();
@@ -160,7 +180,7 @@ export const buildExpressApp = (
 };
 
 export const startHttpServer = async (
-  runtime: ManagedRuntime.ManagedRuntime<any, any>,
+  runtime: AppRuntime,
   portOverride?: number
 ): Promise<RunningServer> => {
   const config = await runtime.runPromise(

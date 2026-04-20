@@ -48,3 +48,5 @@ export const AppLayer = Layer.mergeAll(
 );
 
 export const makeAppRuntime = () => ManagedRuntime.make(AppLayer);
+
+export type AppRuntime = ReturnType<typeof makeAppRuntime>;

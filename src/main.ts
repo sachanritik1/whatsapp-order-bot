@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { makeAppRuntime } from "./app-layer.js";
 import { startHttpServer } from "./http/server.js";
 import { queueWorker } from "./worker/queue-worker.js";
@@ -10,16 +10,23 @@ const runtime = makeAppRuntime();
 
 const main = async () => {
   const runningServer = await startHttpServer(runtime);
-  runtime.runFork(queueWorker);
+  const workerFiber = runtime.runFork(queueWorker);
+  let shuttingDown = false;
 
   const shutdown = async () => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+
+    await runtime.runPromise(Fiber.interrupt(workerFiber));
     await runningServer.close();
     await runtime.dispose();
     process.exit(0);
   };
 
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.once("SIGINT", () => void shutdown());
+  process.once("SIGTERM", () => void shutdown());
 };
 
 void main().catch((cause) => {

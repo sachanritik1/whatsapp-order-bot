@@ -1,5 +1,6 @@
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Option } from "effect";
 
+import { IntegrationError } from "../errors.js";
 import { InboundEventRepo } from "../repos/inbound-event-repo.js";
 import { MessageProcessor } from "../services/message-processor.js";
 import { logError } from "../logging.js";
@@ -22,7 +23,27 @@ const processOne = Effect.gen(function* () {
   }
 
   const errorMessage = Cause.pretty(exit.cause);
-  const status = yield* inboundEventRepo.markRetryableFailure(event.id, errorMessage);
+
+  const failureOption = Cause.failureOption(exit.cause);
+  const isNonRetryableWhatsAppFailure = Option.match(failureOption, {
+    onNone: () => false,
+    onSome: (failure) => {
+      if (!(failure instanceof IntegrationError) || failure.service !== "whatsapp") {
+        return false;
+      }
+
+      if (typeof failure.cause !== "object" || failure.cause === null) {
+        return false;
+      }
+
+      const status = (failure.cause as { readonly status?: unknown }).status;
+      return typeof status === "number" && status >= 400 && status < 500 && status !== 429;
+    }
+  });
+
+  const status = isNonRetryableWhatsAppFailure
+    ? yield* inboundEventRepo.markFailed(event.id, errorMessage)
+    : yield* inboundEventRepo.markRetryableFailure(event.id, errorMessage);
 
   yield* Effect.sync(() => {
     logError("worker.process.failed", {

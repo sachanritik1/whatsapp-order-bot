@@ -2,6 +2,7 @@ import { Context, Effect, Layer } from "effect";
 
 import { AppConfigService } from "../config.js";
 import { IntegrationError } from "../errors.js";
+import { serializeForLog } from "../logging.js";
 import { logInfo } from "../logging.js";
 
 export interface WhatsAppClientShape {
@@ -48,9 +49,23 @@ export const WhatsAppClientLive = Layer.effect(
 
                 if (!response.ok) {
                   const responseBody = await response.text();
-                  throw new Error(
-                    `WhatsApp API ${response.status} ${response.statusText}: ${responseBody}`
-                  );
+                  let parsedBody: unknown = responseBody;
+                  try {
+                    parsedBody = JSON.parse(responseBody);
+                  } catch {
+                    parsedBody = responseBody;
+                  }
+
+                  throw new IntegrationError({
+                    service: "whatsapp",
+                    message: `WhatsApp Cloud API ${response.status} ${response.statusText}`,
+                    cause: {
+                      status: response.status,
+                      statusText: response.statusText,
+                      phone,
+                      response: parsedBody
+                    }
+                  });
                 }
 
                 logInfo("whatsapp.send.success", {
@@ -59,11 +74,13 @@ export const WhatsAppClientLive = Layer.effect(
                 });
               },
               catch: (cause) =>
-                new IntegrationError({
-                  service: "whatsapp",
-                  message: "WhatsApp Cloud API request failed.",
-                  cause
-                })
+                cause instanceof IntegrationError
+                  ? cause
+                  : new IntegrationError({
+                      service: "whatsapp",
+                      message: "WhatsApp Cloud API request failed.",
+                      cause: serializeForLog(cause)
+                    })
             })
           : Effect.sync(() => {
               logInfo("whatsapp.send.dry_run", { phone, text });

@@ -1,8 +1,13 @@
 import { Context, Effect, Layer } from "effect";
 
+import { IntegrationError } from "../errors.js";
 import { logInfo } from "../logging.js";
 import { containsAny, normalizeText } from "../lib/text.js";
-import { CommerceTools, type CommerceToolsShape } from "./commerce-tools.js";
+import {
+  CommerceTools,
+  type CommerceToolsError,
+  type CommerceToolsShape
+} from "./commerce-tools.js";
 import { LLMService, type LLMServiceShape } from "./llm-service.js";
 import { WhatsAppClient, type WhatsAppClientShape } from "./whatsapp-client.js";
 import {
@@ -12,8 +17,10 @@ import {
 } from "../schema.js";
 
 export interface MessageProcessorShape {
-  readonly processEvent: (event: InboundEvent) => Effect.Effect<void, unknown>;
+  readonly processEvent: (event: InboundEvent) => Effect.Effect<void, MessageProcessorError>;
 }
+
+export type MessageProcessorError = CommerceToolsError | IntegrationError;
 
 export class MessageProcessor extends Context.Tag("MessageProcessor")<
   MessageProcessor,

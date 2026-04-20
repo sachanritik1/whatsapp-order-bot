@@ -14,16 +14,47 @@ import type { PlanTurnInput } from "./types.js";
 
 const decodeJsonUnknown = Schema.decodeUnknownSync(Schema.Unknown);
 const GEMINI_TURN_PLAN_RESPONSE_SCHEMA = buildProviderResponseSchema("gemini");
+const REMOTE_PROVIDER_TIMEOUT_MS = 12000;
 
 const providerLabel = (provider: LlmProvider): string =>
   provider === "gemini" ? "Gemini" : "OpenRouter";
+
+const fetchWithTimeout = async (
+  provider: LlmProvider,
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1]
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, REMOTE_PROVIDER_TIMEOUT_MS);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal
+    });
+  } catch (cause) {
+    if (cause instanceof Error && cause.name === "AbortError") {
+      throw new IntegrationError({
+        service: provider,
+        message: `${providerLabel(provider)} request timed out after ${REMOTE_PROVIDER_TIMEOUT_MS}ms.`,
+        cause: serializeForLog(cause)
+      });
+    }
+
+    throw cause;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
 
 const callOpenRouterPlan = async (
   apiKey: string,
   model: string,
   input: PlanTurnInput
 ): Promise<TurnPlan> => {
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetchWithTimeout("openrouter", "https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -84,7 +115,8 @@ const callGeminiPlan = async (
   model: string,
   input: PlanTurnInput
 ): Promise<TurnPlan> => {
-  const response = await fetch(
+  const response = await fetchWithTimeout(
+    "gemini",
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
     {
       method: "POST",

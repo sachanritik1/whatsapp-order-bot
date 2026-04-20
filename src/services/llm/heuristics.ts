@@ -11,6 +11,7 @@ import {
 import type { PlanTurnInput } from "./types.js";
 
 const decodeTurnPlan = Schema.decodeUnknownSync(TurnPlanSchema);
+type MissingOrderField = "name" | "product" | "quantity" | "cityOrPincode";
 
 const extractName = (text: string): string | null => {
   const match = text.match(/\b(?:my name is|i am|this is)\s+([a-z][a-z\s]{1,40})/i);
@@ -196,13 +197,26 @@ const missingFieldsFor = (fields: {
   readonly productQuery: string | null;
   readonly quantity: number | null;
   readonly cityOrPincode: string | null;
-}): ReadonlyArray<"name" | "product" | "quantity" | "cityOrPincode"> => {
-  const missing: Array<"name" | "product" | "quantity" | "cityOrPincode"> = [];
+}): ReadonlyArray<MissingOrderField> => {
+  const missing: Array<MissingOrderField> = [];
   if (!fields.name) missing.push("name");
   if (!fields.productQuery) missing.push("product");
   if (!fields.quantity) missing.push("quantity");
   if (!fields.cityOrPincode) missing.push("cityOrPincode");
   return missing;
+};
+
+const promptLabelForMissingField = (field: MissingOrderField): string => {
+  switch (field) {
+    case "name":
+      return "your name";
+    case "product":
+      return "the product you want";
+    case "quantity":
+      return "the quantity";
+    case "cityOrPincode":
+      return "your city or pincode";
+  }
 };
 
 const summarizeProductList = (search: ProductSearchResult, limit = 3): string => {
@@ -211,6 +225,137 @@ const summarizeProductList = (search: ProductSearchResult, limit = 3): string =>
     .slice(0, limit)
     .map((item) => `${item.name} - INR ${item.price}. ${item.description}`)
     .join("\n");
+};
+
+const buildPriceQuestionPlan = (
+  input: PlanTurnInput,
+  extraction: {
+    readonly name: string | null;
+    readonly productQuery: string | null;
+    readonly quantity: number | null;
+    readonly cityOrPincode: string | null;
+  },
+  missingFields: ReadonlyArray<MissingOrderField>,
+  selectedProductId: string | null,
+  activeSession: OrderSession | null
+): TurnPlan => {
+  const explicitProductQuery = extractExplicitProductQuery(input.userMessage);
+
+  if (!input.productSearch && !explicitProductQuery && !activeSession?.product) {
+    return decodeTurnPlan({
+      intent: "clarify",
+      action: "clarify_request",
+      extractedFields: extraction,
+      missingFields: [],
+      selectedProductId: null,
+      requestedTools: [],
+      replyText: "Sure. Which product would you like the price for?",
+      confidence: 0.9,
+      provider: "heuristic"
+    });
+  }
+
+  if (!input.productSearch && (explicitProductQuery || activeSession?.product)) {
+    return decodeTurnPlan({
+      intent: "price_question",
+      action: "answer_product_details",
+      extractedFields: extraction,
+      missingFields: [],
+      selectedProductId: activeSession?.selectedProductId ?? null,
+      requestedTools: [
+        { name: "searchProducts", reason: "Need product match to answer price question." }
+      ],
+      replyText: "Let me check that product in the catalog.",
+      confidence: 0.7,
+      provider: "heuristic"
+    });
+  }
+
+  const product = input.productSearch?.matches.at(0);
+  return decodeTurnPlan({
+    intent: "price_question",
+    action: "answer_product_details",
+    extractedFields: extraction,
+    missingFields,
+    selectedProductId,
+    requestedTools: input.productSearch
+      ? []
+      : [{ name: "searchProducts", reason: "Need product match to answer price question." }],
+    replyText: product
+      ? `${product.name} costs INR ${product.price}. ${product.description}`
+      : "I could not find that exact item in the catalog. Here are some available options:\n" +
+        summarizeProductList(
+          input.productSearch ?? {
+            query: input.userMessage,
+            matches: [],
+            alternatives: []
+          }
+        ),
+    confidence: product ? 0.92 : 0.55,
+    provider: "heuristic"
+  });
+};
+
+const buildNewOrderPlan = (
+  input: PlanTurnInput,
+  extraction: {
+    readonly name: string | null;
+    readonly productQuery: string | null;
+    readonly quantity: number | null;
+    readonly cityOrPincode: string | null;
+  },
+  selectedProductId: string | null,
+  matchedProduct: ProductSearchResult["matches"][number] | null
+): TurnPlan => {
+  const missingForFreshOrder = missingFieldsFor({
+    name: extraction.name,
+    productQuery: extraction.productQuery,
+    quantity: extraction.quantity,
+    cityOrPincode: extraction.cityOrPincode
+  });
+  const bundledFreshFields = missingForFreshOrder.map(promptLabelForMissingField);
+  const newOrderAction =
+    missingForFreshOrder.length === 0
+      ? "confirm_order"
+      : matchedProduct
+        ? "collect_order_details"
+        : "reset_order";
+  const catalogReply =
+    missingForFreshOrder.length === 0
+      ? `Thanks ${extraction.name}. I have your order for ${extraction.quantity} x ${extraction.productQuery} to ${extraction.cityOrPincode}. Our team will contact you shortly.`
+      : input.productSearch &&
+          input.productSearch.query !== "catalog" &&
+          input.productSearch.matches.length === 0
+        ? `Sure, let's start a fresh order. I do not have that exact item in the catalog. Here are some available options:\n${summarizeProductList(input.productSearch)}`
+        : matchedProduct
+          ? (() => {
+              const remainingLabels = bundledFreshFields.filter(
+                (label) => label !== "the product you want"
+              );
+              return remainingLabels.length > 0
+                ? `Sure, let's start a fresh order. I found ${matchedProduct.name}. Please share ${remainingLabels.join(" and ")}.`
+                : `Sure, let's start a fresh order with ${matchedProduct.name}.`;
+            })()
+          : input.productSearch?.query === "catalog"
+            ? `Sure, let's start a fresh order. Please share ${bundledFreshFields.join(" and ")}. Here are a few options:\n${summarizeProductList(input.productSearch, 4)}`
+            : `Sure, let's start a fresh order. Please share ${bundledFreshFields.join(" and ")}. I can also show you the catalog.`;
+
+  return decodeTurnPlan({
+    intent: "new_order",
+    action: newOrderAction,
+    extractedFields: extraction,
+    missingFields: missingForFreshOrder,
+    selectedProductId,
+    requestedTools:
+      extraction.productQuery && !matchedProduct
+        ? [{ name: "searchProducts", reason: "Need product match before starting a new order." }]
+        : extraction.productQuery || matchedProduct
+          ? []
+          : [{ name: "listCatalog", reason: "Need catalog options while starting a fresh order." }],
+    replyText: catalogReply,
+    confidence: 0.92,
+    provider: "heuristic"
+  });
 };
 
 const buildHeuristicPlan = (input: PlanTurnInput): TurnPlan => {
@@ -290,121 +435,17 @@ const buildHeuristicPlan = (input: PlanTurnInput): TurnPlan => {
   }
 
   if (intent === "price_question") {
-    const explicitProductQuery = extractExplicitProductQuery(input.userMessage);
-
-    if (!input.productSearch && !explicitProductQuery && !activeSession?.product) {
-      return decodeTurnPlan({
-        intent: "clarify",
-        action: "clarify_request",
-        extractedFields: extraction,
-        missingFields: [],
-        selectedProductId: null,
-        requestedTools: [],
-        replyText: "Sure. Which product would you like the price for?",
-        confidence: 0.9,
-        provider: "heuristic"
-      });
-    }
-
-    if (!input.productSearch && (explicitProductQuery || activeSession?.product)) {
-      return decodeTurnPlan({
-        intent,
-        action: "answer_product_details",
-        extractedFields: extraction,
-        missingFields: [],
-        selectedProductId: activeSession?.selectedProductId ?? null,
-        requestedTools: [
-          { name: "searchProducts", reason: "Need product match to answer price question." }
-        ],
-        replyText: "Let me check that product in the catalog.",
-        confidence: 0.7,
-        provider: "heuristic"
-      });
-    }
-
-    const product = input.productSearch?.matches.at(0);
-    return decodeTurnPlan({
-      intent,
-      action: "answer_product_details",
-      extractedFields: extraction,
+    return buildPriceQuestionPlan(
+      input,
+      extraction,
       missingFields,
       selectedProductId,
-      requestedTools: input.productSearch
-        ? []
-        : [{ name: "searchProducts", reason: "Need product match to answer price question." }],
-      replyText: product
-        ? `${product.name} costs INR ${product.price}. ${product.description}`
-        : "I could not find that exact item in the catalog. Here are some available options:\n" +
-          summarizeProductList(
-            input.productSearch ?? {
-              query: input.userMessage,
-              matches: [],
-              alternatives: []
-            }
-          ),
-      confidence: product ? 0.92 : 0.55,
-      provider: "heuristic"
-    });
+      activeSession
+    );
   }
 
   if (intent === "new_order") {
-    const missingForFreshOrder = missingFieldsFor({
-      name: extraction.name,
-      productQuery: extraction.productQuery,
-      quantity: extraction.quantity,
-      cityOrPincode: extraction.cityOrPincode
-    });
-    const bundledFreshFields = missingForFreshOrder.map((field) =>
-      field === "name"
-        ? "your name"
-        : field === "product"
-          ? "the product you want"
-          : field === "quantity"
-            ? "the quantity"
-            : "your city or pincode"
-    );
-    const newOrderAction =
-      missingForFreshOrder.length === 0
-        ? "confirm_order"
-        : matchedProduct
-          ? "collect_order_details"
-          : "reset_order";
-    const catalogReply =
-      missingForFreshOrder.length === 0
-        ? `Thanks ${extraction.name}. I have your order for ${extraction.quantity} x ${extraction.productQuery} to ${extraction.cityOrPincode}. Our team will contact you shortly.`
-        : input.productSearch &&
-            input.productSearch.query !== "catalog" &&
-            input.productSearch.matches.length === 0
-          ? `Sure, let's start a fresh order. I do not have that exact item in the catalog. Here are some available options:\n${summarizeProductList(input.productSearch)}`
-          : matchedProduct
-            ? (() => {
-                const remainingLabels = bundledFreshFields.filter(
-                  (label) => label !== "the product you want"
-                );
-                return remainingLabels.length > 0
-                  ? `Sure, let's start a fresh order. I found ${matchedProduct.name}. Please share ${remainingLabels.join(" and ")}.`
-                  : `Sure, let's start a fresh order with ${matchedProduct.name}.`;
-              })()
-            : input.productSearch?.query === "catalog"
-              ? `Sure, let's start a fresh order. Please share ${bundledFreshFields.join(" and ")}. Here are a few options:\n${summarizeProductList(input.productSearch, 4)}`
-              : `Sure, let's start a fresh order. Please share ${bundledFreshFields.join(" and ")}. I can also show you the catalog.`;
-
-    return decodeTurnPlan({
-      intent,
-      action: newOrderAction,
-      extractedFields: extraction,
-      missingFields: missingForFreshOrder,
-      selectedProductId,
-      requestedTools:
-        extraction.productQuery && !matchedProduct
-          ? [{ name: "searchProducts", reason: "Need product match before starting a new order." }]
-          : extraction.productQuery || matchedProduct
-            ? []
-            : [{ name: "listCatalog", reason: "Need catalog options while starting a fresh order." }],
-      replyText: catalogReply,
-      confidence: 0.92,
-      provider: "heuristic"
-    });
+    return buildNewOrderPlan(input, extraction, selectedProductId, matchedProduct);
   }
 
   if (intent === "product_question" && !activeSession) {
@@ -447,18 +488,7 @@ const buildHeuristicPlan = (input: PlanTurnInput): TurnPlan => {
   }
 
   const canConfirm = missingFields.length === 0;
-  const pendingFields = missingFields.map((field) => {
-    switch (field) {
-      case "name":
-        return "your name";
-      case "product":
-        return "the product you want";
-      case "quantity":
-        return "the quantity";
-      case "cityOrPincode":
-        return "your city or pincode";
-    }
-  });
+  const pendingFields = missingFields.map(promptLabelForMissingField);
 
   return decodeTurnPlan({
     intent: "order_intent",

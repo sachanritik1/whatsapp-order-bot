@@ -220,6 +220,28 @@ describe("WhatsApp order assistant POC", () => {
     expect(events).toHaveLength(0);
   });
 
+  it("returns HTTP 503 when enqueue fails so webhook delivery can be retried", async () => {
+    const runPromiseSpy = vi
+      .spyOn(context.runtime, "runPromise")
+      .mockRejectedValueOnce(new Error("database unavailable"));
+
+    const response = await fetch(`${context.baseUrl}/webhook`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(webhookEnvelope("I want to order 1 protein granola jar"))
+    });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ received: false });
+
+    runPromiseSpy.mockRestore();
+
+    const events = await readEvents(context.runtime);
+    expect(events).toHaveLength(0);
+  });
+
   it("captures an order across multiple messages and stores the lead in SQLite", async () => {
     const firstResponse = await fetch(`${context.baseUrl}/webhook`, {
       method: "POST",
