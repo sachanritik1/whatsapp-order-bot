@@ -2,10 +2,16 @@ export type LogLevel = "info" | "warn" | "error";
 
 export const serializeForLog = (value: unknown): unknown => {
   if (value instanceof Error) {
+    const cause =
+      "cause" in value && value.cause !== undefined
+        ? serializeForLog(value.cause)
+        : undefined;
+
     return {
       name: value.name,
       message: value.message,
-      stack: value.stack
+      stack: value.stack,
+      ...(cause !== undefined ? { cause } : {})
     };
   }
 

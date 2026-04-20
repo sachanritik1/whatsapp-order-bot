@@ -13,8 +13,11 @@ const loadConfig = Effect.try({
       webhookVerifyToken: process.env.WEBHOOK_VERIFY_TOKEN,
       whatsappAccessToken: process.env.WHATSAPP_ACCESS_TOKEN || null,
       whatsappPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || null,
+      llmProvider: process.env.LLM_PROVIDER || null,
       openRouterApiKey: process.env.OPENROUTER_API_KEY || null,
       openRouterModel: process.env.OPENROUTER_MODEL || null,
+      googleGeminiApiKey: process.env.GOOGLE_GEMINI_API_KEY || null,
+      googleGeminiModel: process.env.GOOGLE_GEMINI_MODEL || null,
       databaseFile: resolve(process.cwd(), process.env.DATABASE_FILE ?? "./data/app.db"),
       catalogFile: resolve(process.cwd(), "data/catalog.json"),
       faqFile: resolve(process.cwd(), "data/faq.json")

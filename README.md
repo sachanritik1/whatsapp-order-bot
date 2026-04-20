@@ -9,7 +9,7 @@ Effect TS + Node.js + Express backend for a WhatsApp AI order assistant POC. The
 - Effect-first service composition using `Effect`, `Layer`, and `Schema`
 - SQLite-backed inbound queue, order sessions, and leads
 - Catalog and FAQ answers grounded only in local JSON data
-- OpenRouter-backed intent classification and optional reply phrasing
+- OpenRouter or Google Gemini backed intent classification and optional reply phrasing
 - Real WhatsApp Cloud API sending when configured, dry-run logging otherwise
 
 ## Setup
@@ -23,16 +23,19 @@ npm run dev
 Required environment variables:
 
 - `WEBHOOK_VERIFY_TOKEN`
-- `OPENROUTER_MODEL` when using OpenRouter
 
 Optional:
 
+- `LLM_PROVIDER` (`openrouter` or `gemini`). If omitted, app prefers OpenRouter when configured, then Gemini, then heuristic fallback.
 - `OPENROUTER_API_KEY`
+- `OPENROUTER_MODEL`
+- `GOOGLE_GEMINI_API_KEY`
+- `GOOGLE_GEMINI_MODEL`
 - `WHATSAPP_ACCESS_TOKEN`
 - `WHATSAPP_PHONE_NUMBER_ID`
 - `DATABASE_FILE`
 
-If OpenRouter credentials are omitted, the app falls back to deterministic intent classification and reply templates so the POC remains runnable locally.
+If no supported LLM provider is configured, app falls back to deterministic intent classification and reply templates so POC remains runnable locally.
 
 ## Example Webhook Verification
 

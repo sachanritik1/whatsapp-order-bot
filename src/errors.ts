@@ -16,7 +16,7 @@ export class DatabaseError extends Data.TaggedError("DatabaseError")<{
 }> {}
 
 export class IntegrationError extends Data.TaggedError("IntegrationError")<{
-  readonly service: "openrouter" | "whatsapp";
+  readonly service: "openrouter" | "gemini" | "whatsapp";
   readonly message: string;
   readonly cause?: unknown;
 }> {}

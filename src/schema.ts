@@ -171,7 +171,7 @@ export const TurnPlanSchema = Schema.Struct({
   requestedTools: Schema.Array(ToolCallSchema),
   replyText: Schema.String,
   confidence: Schema.Number,
-  provider: Schema.Literal("heuristic", "openrouter")
+  provider: Schema.Literal("heuristic", "openrouter", "gemini")
 });
 export type TurnPlan = typeof TurnPlanSchema.Type;
 
@@ -209,13 +209,19 @@ export const WhatsAppWebhookPayloadSchema = Schema.Struct({
 });
 export type WhatsAppWebhookPayload = typeof WhatsAppWebhookPayloadSchema.Type;
 
+export const LlmProviderSchema = Schema.Literal("openrouter", "gemini");
+export type LlmProvider = typeof LlmProviderSchema.Type;
+
 export const AppConfigSchema = Schema.Struct({
   port: Schema.Number,
   webhookVerifyToken: Schema.String,
   whatsappAccessToken: Schema.NullOr(Schema.String),
   whatsappPhoneNumberId: Schema.NullOr(Schema.String),
+  llmProvider: Schema.NullOr(LlmProviderSchema),
   openRouterApiKey: Schema.NullOr(Schema.String),
   openRouterModel: Schema.NullOr(Schema.String),
+  googleGeminiApiKey: Schema.NullOr(Schema.String),
+  googleGeminiModel: Schema.NullOr(Schema.String),
   databaseFile: Schema.String,
   catalogFile: Schema.String,
   faqFile: Schema.String

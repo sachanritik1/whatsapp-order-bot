@@ -123,8 +123,11 @@ const startTestApp = async (): Promise<TestContext> => {
 
   process.env.WEBHOOK_VERIFY_TOKEN = "verify-token";
   process.env.DATABASE_FILE = join(tempDir, "app.db");
+  process.env.LLM_PROVIDER = "";
   process.env.OPENROUTER_API_KEY = "";
   process.env.OPENROUTER_MODEL = "";
+  process.env.GOOGLE_GEMINI_API_KEY = "";
+  process.env.GOOGLE_GEMINI_MODEL = "";
   process.env.WHATSAPP_ACCESS_TOKEN = "";
   process.env.WHATSAPP_PHONE_NUMBER_ID = "";
   process.env.PORT = "0";

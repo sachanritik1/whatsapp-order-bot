@@ -42,6 +42,8 @@ export const AppLayer = Layer.mergeAll(
   LeadLayer,
   OrderSessionLayer,
   CommerceToolsLayer,
+  LlmLayer,
+  WhatsAppLayer,
   ProcessorLayer
 );
 
