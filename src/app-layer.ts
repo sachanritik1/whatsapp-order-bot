@@ -2,11 +2,11 @@ import { Layer, ManagedRuntime } from "effect";
 
 import { AppConfigLive } from "./config.js";
 import { CatalogRepoLive } from "./repos/catalog-repo.js";
-import { DatabaseClientLive } from "./repos/database.js";
 import { FaqRepoLive } from "./repos/faq-repo.js";
-import { InboundEventRepoLive } from "./repos/inbound-event-repo.js";
-import { LeadRepoLive } from "./repos/lead-repo.js";
-import { OrderSessionRepoLive } from "./repos/order-session-repo.js";
+import { SqliteDatabaseClientLive } from "./repos/sqlite/database.js";
+import { SqliteInboundEventRepoLive } from "./repos/sqlite/inbound-event-repo.js";
+import { SqliteLeadRepoLive } from "./repos/sqlite/lead-repo.js";
+import { SqliteOrderSessionRepoLive } from "./repos/sqlite/order-session-repo.js";
 import { CommerceToolsLive } from "./services/commerce-tools.js";
 import { ConversationEngineLive } from "./services/conversation-engine.js";
 import { InboundEventRunnerLive } from "./services/inbound-event-runner.js";
@@ -16,14 +16,14 @@ import { WhatsAppClientLive } from "./services/whatsapp-client.js";
 
 const BaseLayer = AppConfigLive;
 
-const DatabaseLayer = DatabaseClientLive.pipe(Layer.provide(BaseLayer));
+const DatabaseLayer = SqliteDatabaseClientLive.pipe(Layer.provide(BaseLayer));
 const CatalogLayer = CatalogRepoLive.pipe(Layer.provide(BaseLayer));
 const FaqLayer = FaqRepoLive.pipe(Layer.provide(BaseLayer));
 const TurnPlannerLayer = TurnPlannerLive.pipe(Layer.provide(BaseLayer));
 const WhatsAppLayer = WhatsAppClientLive.pipe(Layer.provide(BaseLayer));
-const InboundEventLayer = InboundEventRepoLive.pipe(Layer.provide(DatabaseLayer));
-const LeadLayer = LeadRepoLive.pipe(Layer.provide(DatabaseLayer));
-const OrderSessionLayer = OrderSessionRepoLive.pipe(Layer.provide(DatabaseLayer));
+const InboundEventLayer = SqliteInboundEventRepoLive.pipe(Layer.provide(DatabaseLayer));
+const LeadLayer = SqliteLeadRepoLive.pipe(Layer.provide(DatabaseLayer));
+const OrderSessionLayer = SqliteOrderSessionRepoLive.pipe(Layer.provide(DatabaseLayer));
 const CommerceToolsLayer = CommerceToolsLive.pipe(
   Layer.provide(Layer.mergeAll(CatalogLayer, FaqLayer, LeadLayer, OrderSessionLayer))
 );

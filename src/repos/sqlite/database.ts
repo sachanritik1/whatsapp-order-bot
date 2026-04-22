@@ -3,24 +3,23 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { Context, Effect, Layer } from "effect";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AppConfigService } from "../config.js";
-import { DatabaseError } from "../errors.js";
+import { AppConfigService } from "../../config.js";
+import { DatabaseError } from "../../errors.js";
 import { drizzleSchema } from "./db-schema.js";
 
 export type SqliteDatabase = InstanceType<typeof Database>;
 export type DrizzleDatabase = ReturnType<typeof drizzle<typeof drizzleSchema>>;
-export interface DatabaseService {
+export interface SqliteDatabaseService {
   readonly sqlite: SqliteDatabase;
   readonly drizzle: DrizzleDatabase;
 }
 
-const migrationsFolder = fileURLToPath(new URL("../../drizzle", import.meta.url));
-const journalPath = fileURLToPath(new URL("../../drizzle/meta/_journal.json", import.meta.url));
+const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
+const journalPath = fileURLToPath(new URL("../../../drizzle/meta/_journal.json", import.meta.url));
 
 const maybeBaselineExistingDatabase = async (db: SqliteDatabase) => {
   db.exec(`
@@ -65,7 +64,7 @@ const maybeBaselineExistingDatabase = async (db: SqliteDatabase) => {
   }
 
   const migrationFilePath = fileURLToPath(
-    new URL(`../../drizzle/${firstMigration.tag}.sql`, import.meta.url)
+    new URL(`../../../drizzle/${firstMigration.tag}.sql`, import.meta.url)
   );
   const migrationSql = await readFile(migrationFilePath, "utf8");
   const hash = createHash("sha256").update(migrationSql).digest("hex");
@@ -85,10 +84,12 @@ const formatMigrationErrorMessage = (cause: unknown) => {
   return "Unable to apply SQLite migrations.";
 };
 
-export const DatabaseClient = Context.GenericTag<DatabaseService>("DatabaseClient");
+export const SqliteDatabaseClient = Context.GenericTag<SqliteDatabaseService>(
+  "SqliteDatabaseClient"
+);
 
-export const DatabaseClientLive = Layer.scoped(
-  DatabaseClient,
+export const SqliteDatabaseClientLive = Layer.scoped(
+  SqliteDatabaseClient,
   Effect.acquireRelease(
     Effect.gen(function* () {
       const config = yield* AppConfigService;
