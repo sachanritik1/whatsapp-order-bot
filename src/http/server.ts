@@ -18,7 +18,6 @@ const decodeWebhookPayload = Schema.decodeUnknownSync(WhatsAppWebhookPayloadSche
 const decodeInboundMessage = Schema.decodeUnknownSync(InboundMessageSchema);
 
 export interface RunningServer {
-  readonly app: HttpRouter.HttpRouter;
   readonly server: Server;
   readonly port: number;
   readonly close: () => Promise<void>;
@@ -200,7 +199,6 @@ export const startHttpServer = async (
   logInfo("server.started", { port: resolvedPort });
 
   return {
-    app,
     server,
     port: resolvedPort,
     close: () =>

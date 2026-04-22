@@ -35,8 +35,8 @@ describe("inbound event runner", () => {
           }),
         list: Effect.succeed([])
       },
-      messageProcessor: {
-        processEvent: (_event) =>
+      conversationEngine: {
+        handleEvent: (_event) =>
           Effect.fail(
             new IntegrationError({
               service: "whatsapp",

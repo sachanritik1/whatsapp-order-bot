@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { makeAppRuntime } from "../src/app-layer.js";
-import { LLMService } from "../src/services/llm-service.js";
+import { TurnPlanner } from "../src/services/turn-planner.js";
 import type { TurnPlan } from "../src/schema.js";
 
-describe("LLMService Gemini provider", () => {
+describe("TurnPlanner Gemini provider", () => {
   let tempDir: string;
   let runtime: ReturnType<typeof makeAppRuntime>;
   let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -75,7 +75,7 @@ describe("LLMService Gemini provider", () => {
   it("uses Gemini when configured", async () => {
     const plan = await runtime.runPromise(
       Effect.gen(function* () {
-        const llm = yield* LLMService;
+        const llm = yield* TurnPlanner;
         return yield* llm.planTurn({
           userMessage: "Hi",
           session: null
@@ -108,7 +108,7 @@ describe("LLMService Gemini provider", () => {
   it("includes nested Gemini property ordering for nullable object fields", async () => {
     await runtime.runPromise(
       Effect.gen(function* () {
-        const llm = yield* LLMService;
+        const llm = yield* TurnPlanner;
         return yield* llm.planTurn({
           userMessage: "Hi",
           session: null
@@ -153,7 +153,7 @@ describe("LLMService Gemini provider", () => {
 
     const plan = await runtime.runPromise(
       Effect.gen(function* () {
-        const llm = yield* LLMService;
+        const llm = yield* TurnPlanner;
         return yield* llm.planTurn({
           userMessage: "Hi",
           session: null
@@ -175,7 +175,7 @@ describe("LLMService Gemini provider", () => {
 
     const plan = await runtime.runPromise(
       Effect.gen(function* () {
-        const llm = yield* LLMService;
+        const llm = yield* TurnPlanner;
         return yield* llm.planTurn({
           userMessage: "Hi",
           session: null
@@ -222,7 +222,7 @@ describe("LLMService Gemini provider", () => {
 
     const plan = await runtime.runPromise(
       Effect.gen(function* () {
-        const llm = yield* LLMService;
+        const llm = yield* TurnPlanner;
         return yield* llm.planTurn({
           userMessage: "Hi",
           session: null
@@ -273,7 +273,7 @@ describe("LLMService Gemini provider", () => {
 
     const plan = await runtime.runPromise(
       Effect.gen(function* () {
-        const llm = yield* LLMService;
+        const llm = yield* TurnPlanner;
         return yield* llm.planTurn({
           userMessage: "What are your products?",
           session: null
@@ -320,7 +320,7 @@ describe("LLMService Gemini provider", () => {
 
     const plan = await runtime.runPromise(
       Effect.gen(function* () {
-        const llm = yield* LLMService;
+        const llm = yield* TurnPlanner;
         return yield* llm.planTurn({
           userMessage: "What are your products?",
           session: null

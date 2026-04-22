@@ -1,6 +1,6 @@
 # WhatsApp Order Assistant POC
 
-Effect TS + Node.js + Express backend for a WhatsApp AI order assistant POC. The service verifies Meta webhooks, acknowledges inbound events immediately, stores them in SQLite, and processes them asynchronously.
+Effect TS + Node.js backend for a WhatsApp AI order assistant POC. The service verifies Meta webhooks, acknowledges inbound events immediately, stores them in SQLite, and processes them asynchronously.
 
 ## Features
 

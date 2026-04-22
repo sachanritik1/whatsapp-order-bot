@@ -4,16 +4,16 @@ import { DatabaseError, IntegrationError } from "../errors.js";
 import { logError } from "../logging.js";
 import { InboundEventRepo, type InboundEventRepoShape } from "../repos/inbound-event-repo.js";
 import {
-  MessageProcessor,
-  type MessageProcessorError,
-  type MessageProcessorShape
-} from "./message-processor.js";
+  ConversationEngine,
+  type ConversationEngineError,
+  type ConversationEngineShape
+} from "./conversation-engine.js";
 
 export interface InboundEventRunnerShape {
   readonly runNext: Effect.Effect<void, InboundEventRunnerError>;
 }
 
-export type InboundEventRunnerError = DatabaseError | MessageProcessorError;
+export type InboundEventRunnerError = DatabaseError | ConversationEngineError;
 
 export class InboundEventRunner extends Context.Tag("InboundEventRunner")<
   InboundEventRunner,
@@ -22,7 +22,7 @@ export class InboundEventRunner extends Context.Tag("InboundEventRunner")<
 
 interface InboundEventRunnerDependencies {
   readonly inboundEventRepo: InboundEventRepoShape;
-  readonly messageProcessor: MessageProcessorShape;
+  readonly conversationEngine: ConversationEngineShape;
 }
 
 const isNonRetryableWhatsAppFailure = (cause: Cause.Cause<unknown>): boolean => {
@@ -55,7 +55,7 @@ export const makeInboundEventRunner = (
       return;
     }
 
-    const exit = yield* Effect.exit(deps.messageProcessor.processEvent(event));
+    const exit = yield* Effect.exit(deps.conversationEngine.handleEvent(event));
 
     if (exit._tag === "Success") {
       yield* deps.inboundEventRepo.markProcessed(event.id);
@@ -81,12 +81,12 @@ export const InboundEventRunnerLive = Layer.effect(
   InboundEventRunner,
   Effect.gen(function* () {
     const inboundEventRepo = yield* InboundEventRepo;
-    const messageProcessor = yield* MessageProcessor;
+    const conversationEngine = yield* ConversationEngine;
 
     return InboundEventRunner.of(
       makeInboundEventRunner({
         inboundEventRepo,
-        messageProcessor
+        conversationEngine
       })
     );
   })

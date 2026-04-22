@@ -10,8 +10,6 @@ import { OrderSessionRepoLive } from "./repos/order-session-repo.js";
 import { CommerceToolsLive } from "./services/commerce-tools.js";
 import { ConversationEngineLive } from "./services/conversation-engine.js";
 import { InboundEventRunnerLive } from "./services/inbound-event-runner.js";
-import { LLMServiceLive } from "./services/llm-service.js";
-import { MessageProcessorLive } from "./services/message-processor.js";
 import { OrderSessionWorkflowLive } from "./services/order-session-workflow.js";
 import { TurnPlannerLive } from "./services/turn-planner.js";
 import { WhatsAppClientLive } from "./services/whatsapp-client.js";
@@ -22,7 +20,6 @@ const DatabaseLayer = DatabaseClientLive.pipe(Layer.provide(BaseLayer));
 const CatalogLayer = CatalogRepoLive.pipe(Layer.provide(BaseLayer));
 const FaqLayer = FaqRepoLive.pipe(Layer.provide(BaseLayer));
 const TurnPlannerLayer = TurnPlannerLive.pipe(Layer.provide(BaseLayer));
-const LlmLayer = LLMServiceLive.pipe(Layer.provide(TurnPlannerLayer));
 const WhatsAppLayer = WhatsAppClientLive.pipe(Layer.provide(BaseLayer));
 const InboundEventLayer = InboundEventRepoLive.pipe(Layer.provide(DatabaseLayer));
 const LeadLayer = LeadRepoLive.pipe(Layer.provide(DatabaseLayer));
@@ -43,12 +40,8 @@ const ConversationDependencies = Layer.mergeAll(
 const ConversationEngineLayer = ConversationEngineLive.pipe(
   Layer.provide(ConversationDependencies)
 );
-
-const ProcessorLayer = MessageProcessorLive.pipe(
-  Layer.provide(ConversationEngineLayer)
-);
 const InboundEventRunnerLayer = InboundEventRunnerLive.pipe(
-  Layer.provide(Layer.mergeAll(InboundEventLayer, ProcessorLayer))
+  Layer.provide(Layer.mergeAll(InboundEventLayer, ConversationEngineLayer))
 );
 
 export const AppLayer = Layer.mergeAll(
@@ -58,11 +51,9 @@ export const AppLayer = Layer.mergeAll(
   OrderSessionLayer,
   CommerceToolsLayer,
   TurnPlannerLayer,
-  LlmLayer,
   WhatsAppLayer,
   OrderSessionWorkflowLayer,
   ConversationEngineLayer,
-  ProcessorLayer,
   InboundEventRunnerLayer
 );
 
