@@ -12,15 +12,15 @@
     "db:flush": "node --input-type=module -e \"import { existsSync, rmSync } from 'node:fs'; import { resolve } from 'node:path'; const file = resolve(process.cwd(), process.env.DATABASE_FILE ?? './data/app.db'); if (existsSync(file)) { rmSync(file); console.log('Flushed SQLite DB:', file); } else { console.log('SQLite DB not found, nothing to flush:', file); }\""
   },
   "dependencies": {
+    "@effect/platform": "^0.96.0",
+    "@effect/platform-node": "^0.106.0",
     "better-sqlite3": "^12.8.0",
     "dotenv": "^17.2.3",
     "drizzle-orm": "^0.45.2",
-    "effect": "^3.21.0",
-    "express": "^5.2.1"
+    "effect": "^3.21.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/express": "^5.0.6",
     "@types/node": "^24.6.0",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.20.6",

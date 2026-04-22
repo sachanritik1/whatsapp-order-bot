@@ -1,42 +1,41 @@
-import { Effect, Schema } from "effect";
-import express, {
-  type ErrorRequestHandler,
-  type Express,
-  type Request,
-  type Response
-} from "express";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform";
+import { NodeHttpServer } from "@effect/platform-node";
+import { Effect, Option, Schema } from "effect";
 import { createServer, type Server } from "node:http";
 
+import type { AppRuntime } from "../app-layer.js";
 import { AppConfigService } from "../config.js";
 import { logError, logInfo, logWarn } from "../logging.js";
-import type { AppRuntime } from "../app-layer.js";
+import { InboundEventRepo } from "../repos/inbound-event-repo.js";
 import {
   InboundMessageSchema,
   WhatsAppWebhookPayloadSchema,
   type AppConfig,
   type InboundMessage
 } from "../schema.js";
-import { InboundEventRepo } from "../repos/inbound-event-repo.js";
 
 const decodeWebhookPayload = Schema.decodeUnknownSync(WhatsAppWebhookPayloadSchema);
 const decodeInboundMessage = Schema.decodeUnknownSync(InboundMessageSchema);
 
 export interface RunningServer {
-  readonly app: Express;
+  readonly app: HttpRouter.HttpRouter;
   readonly server: Server;
   readonly port: number;
   readonly close: () => Promise<void>;
 }
 
-const sendReceived = (response: Response) => {
-  response.status(200).json({ received: true });
-};
+const receivedResponse = HttpServerResponse.unsafeJson({ received: true });
+const retryableFailureResponse = HttpServerResponse.unsafeJson(
+  { received: false },
+  { status: 503 }
+);
+const notFoundResponse = HttpServerResponse.unsafeJson(
+  { error: "Not found" },
+  { status: 404 }
+);
+const forbiddenResponse = HttpServerResponse.text("Forbidden", { status: 403 });
 
-const sendRetryableFailure = (response: Response) => {
-  response.status(503).json({ received: false });
-};
-
-const readQueryParam = (value: unknown): string | null => {
+const readQueryParam = (value: string | ReadonlyArray<string> | undefined): string | null => {
   if (typeof value === "string") {
     return value;
   }
@@ -65,58 +64,80 @@ const extractInboundMessages = (
   );
 
 const handleVerification = (
-  request: Request,
-  response: Response,
+  searchParams: Readonly<Record<string, string | Array<string>>>,
   config: AppConfig
 ) => {
-  const mode = readQueryParam(request.query["hub.mode"]);
-  const token = readQueryParam(request.query["hub.verify_token"]);
-  const challenge = readQueryParam(request.query["hub.challenge"]);
+  const mode = readQueryParam(searchParams["hub.mode"]);
+  const token = readQueryParam(searchParams["hub.verify_token"]);
+  const challenge = readQueryParam(searchParams["hub.challenge"]);
 
   if (mode === "subscribe" && token === config.webhookVerifyToken && challenge) {
-    response.status(200).type("text/plain").send(challenge);
-    return;
+    return HttpServerResponse.text(challenge, {
+      status: 200,
+      contentType: "text/plain"
+    });
   }
 
-  response.status(403).type("text/plain").send("Forbidden");
+  return forbiddenResponse;
 };
 
-const handleWebhookPost = async (
-  runtime: AppRuntime,
-  payload: unknown,
-  response: Response
-) => {
-  let decodedPayload: ReturnType<typeof decodeWebhookPayload>;
+const handleWebhookPost = (
+  runtime: AppRuntime
+): Effect.Effect<HttpServerResponse.HttpServerResponse, never, HttpServerRequest.HttpServerRequest> =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const parsedPayload = yield* Effect.either(request.json);
 
-  try {
-    decodedPayload = decodeWebhookPayload(payload);
-  } catch (cause) {
-    logWarn("webhook.ignored", {
-      reason: "Invalid or unsupported payload.",
-      cause: String(cause)
-    });
-    sendReceived(response);
-    return;
-  }
+    if (parsedPayload._tag === "Left") {
+      logWarn("webhook.invalid_json", {
+        reason: "Effect request JSON parser rejected request body."
+      });
+      return receivedResponse;
+    }
 
-  const messages = extractInboundMessages(decodedPayload);
-  if (messages.length === 0) {
-    logInfo("webhook.ignored_non_message", {
-      reason: "Payload did not include inbound text messages."
-    });
-    sendReceived(response);
-    return;
-  }
+    let decodedPayload: ReturnType<typeof decodeWebhookPayload>;
 
-  logInfo("webhook.received", { messageCount: messages.length });
+    try {
+      decodedPayload = decodeWebhookPayload(parsedPayload.right);
+    } catch (cause) {
+      logWarn("webhook.ignored", {
+        reason: "Invalid or unsupported payload.",
+        cause: String(cause)
+      });
+      return receivedResponse;
+    }
 
-  try {
-    await runtime.runPromise(
-      Effect.gen(function* () {
-        const repo = yield* InboundEventRepo;
-        yield* repo.enqueue(messages);
+    const messages = extractInboundMessages(decodedPayload);
+    if (messages.length === 0) {
+      logInfo("webhook.ignored_non_message", {
+        reason: "Payload did not include inbound text messages."
+      });
+      return receivedResponse;
+    }
+
+    logInfo("webhook.received", { messageCount: messages.length });
+
+    const enqueueResult = yield* Effect.either(
+      Effect.tryPromise({
+        try: () =>
+          runtime.runPromise(
+            Effect.gen(function* () {
+              const repo = yield* InboundEventRepo;
+              yield* repo.enqueue(messages);
+            })
+          ),
+        catch: (cause) => cause
       })
     );
+
+    if (enqueueResult._tag === "Left") {
+      logError("webhook.enqueue.failed", {
+        reason: "Inbound event enqueue failed. Returning 503 so webhook provider can retry.",
+        messageCount: messages.length,
+        cause: String(enqueueResult.left)
+      });
+      return retryableFailureResponse;
+    }
 
     for (const message of messages) {
       logInfo("queue.enqueued", {
@@ -125,59 +146,32 @@ const handleWebhookPost = async (
       });
     }
 
-    sendReceived(response);
-  } catch (cause) {
-    logError("webhook.enqueue.failed", {
-      reason: "Inbound event enqueue failed. Returning 503 so webhook provider can retry.",
-      messageCount: messages.length,
-      cause: String(cause)
-    });
-    sendRetryableFailure(response);
-  }
-};
+    return receivedResponse;
+  });
 
-export const buildExpressApp = (
-  runtime: AppRuntime,
+const handleWebhookGet = (
   config: AppConfig
-): Express => {
-  const app = express();
-  app.disable("x-powered-by");
-  app.use(express.json({ limit: "256kb" }));
+): Effect.Effect<HttpServerResponse.HttpServerResponse, never, HttpServerRequest.HttpServerRequest> =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
 
-  app.get("/webhook", (request, response) => {
-    handleVerification(request, response, config);
-  });
-
-  app.post("/webhook", async (request, response) => {
-    await handleWebhookPost(runtime, request.body, response);
-  });
-
-  const invalidJsonHandler: ErrorRequestHandler = (error, _request, response, next) => {
-    if (
-      error instanceof SyntaxError ||
-      (typeof error === "object" &&
-        error !== null &&
-        "type" in error &&
-        error.type === "entity.parse.failed")
-    ) {
-      logWarn("webhook.invalid_json", {
-        reason: "Express JSON parser rejected request body."
-      });
-      sendReceived(response);
-      return;
+    if (Option.isNone(url)) {
+      return forbiddenResponse;
     }
 
-    next(error);
-  };
-
-  app.use(invalidJsonHandler);
-
-  app.use((_request, response) => {
-    response.status(404).json({ error: "Not found" });
+    return handleVerification(HttpServerRequest.searchParamsFromURL(url.value), config);
   });
 
-  return app;
-};
+export const buildHttpApp = (
+  runtime: AppRuntime,
+  config: AppConfig
+): HttpRouter.HttpRouter =>
+  HttpRouter.empty.pipe(
+    HttpRouter.get("/webhook", handleWebhookGet(config)),
+    HttpRouter.post("/webhook", handleWebhookPost(runtime)),
+    HttpRouter.all("*", notFoundResponse)
+  );
 
 export const startHttpServer = async (
   runtime: AppRuntime,
@@ -189,8 +183,11 @@ export const startHttpServer = async (
     })
   );
   const port = portOverride ?? config.port;
-  const app = buildExpressApp(runtime, config);
-  const server = createServer(app);
+  const app = buildHttpApp(runtime, config);
+  const server = createServer();
+  const handler = await Effect.runPromise(NodeHttpServer.makeHandler(app));
+
+  server.on("request", handler);
 
   await new Promise<void>((resolve) => {
     server.listen(port, resolve);
